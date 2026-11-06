@@ -1,5 +1,5 @@
 import express from "express";
-import { MongoClient } from "mongodb";
+import { MongoClient, ObjectId } from "mongodb";
 import "dotenv/config";
 import cors from "cors";
 
@@ -33,10 +33,18 @@ app.post("/add-book", async (req, res) => {
   res.send(result);
 });
 
+//private: details page
+app.get('/all-books/:id', async(req, res) =>{
+    const {id} = req.params
+    const result = await addBookCollection.findOne({_id: new ObjectId(id)})
+    console.log(result)
+    res.send({result})
+})
+
 // Public: Get all books (Newest books first / Descending order)
 app.get("/all-books", async (req, res) => {
   try {
-    // .sort({ _id: -1 }) ব্যবহার করার কারণে পরে যোগ করা বইগুলো সবার উপরে থাকবে
+    // .sort({ _id: -1 }) 
     const books = await addBookCollection.find().sort({ _id: -1 }).toArray();
     res.send(books);
   } catch (error) {

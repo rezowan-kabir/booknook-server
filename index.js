@@ -261,6 +261,101 @@ app.get("/my-books/:email", async (req, res) => {
 });
 
 //http://localhost:8000/my-books
+// 8. Get the books a specific user has cataloged
+app.get("/my-books/:email", async (req, res) => {
+  try {
+    const books = await booksCollection
+      .find({ "addedBy.email": req.params.email })
+      .sort({ _id: -1 })
+      .toArray();
+
+    res.send(books);
+  } catch (error) {
+    console.error("Error fetching user books:", error);
+
+    res.status(500).send({ message: "Failed to fetch books" });
+  }
+});
+
+// 9. Update a cataloged book (Simplified)
+app.put("/my-books/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(404).send({ success: false, message: "Book not found" });
+    }
+
+    const { title, author, category, totalCopies, description, imageUrl } = req.body;
+
+    if (!title || !author) {
+      return res.status(400).send({ success: false, message: "Title and author are required" });
+    }
+
+    const updateDoc = {
+      $set: {
+        title,
+        author,
+        category,
+        totalCopies: Number(totalCopies) || 1,
+        availableCopies: Number(totalCopies) || 1,
+        description,
+        imageUrl,
+      },
+    };
+
+    const result = await booksCollection.updateOne(
+      { _id: new ObjectId(id) },
+      updateDoc
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).send({ success: false, message: "Book not found" });
+    }
+
+    console.log("Book updated:", id);
+    res.send({ success: true, message: "Book updated successfully" });
+
+  } catch (error) {
+    console.error("Error updating book:", error);
+    res.status(500).send({
+      success: false,
+      message: "Failed to update book",
+      error: error.message,
+    });
+  }
+});
+
+// 10. Remove a cataloged book (Simplified)
+app.delete("/my-books/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(404).send({ success: false, message: "Book not found" });
+    }
+
+    const result = await booksCollection.deleteOne({
+      _id: new ObjectId(id),
+    });
+
+    if (result.deletedCount === 0) {
+      return res.status(404).send({ success: false, message: "Book not found" });
+    }
+
+    console.log("Book removed:", id);
+    res.send({ success: true, message: "Book removed successfully" });
+
+  } catch (error) {
+    console.error("Error removing book:", error);
+    res.status(500).send({
+      success: false,
+      message: "Failed to remove book",
+      error: error.message,
+    });
+  }
+});
+
 // Error Handling & Server Startup
 app.use((error, req, res, next) => {
   console.error("Request failed:", error);

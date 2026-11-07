@@ -39,10 +39,8 @@ const mongoClient = await connectToMongoDB();
 const db = mongoClient.db("booknook");
 
 // Collections
-const booksCollection = db.collection("add books");       // সব বইয়ের কালেকশন
-const borrowsCollection = db.collection("borrow books");   // বরো করা বইয়ের কালেকশন
-
-
+const booksCollection = db.collection("add books"); // সব বইয়ের কালেকশন
+const borrowsCollection = db.collection("borrow books"); // বরো করা বইয়ের কালেকশন
 
 // Root route
 app.get("/", (req, res) => {
@@ -56,7 +54,7 @@ app.post("/add-book", async (req, res) => {
       ...req.body,
       // Every book starts with all of its copies on the shelf.
       availableCopies: Number(req.body.totalCopies) || 0,
-      createdAt: new Date()
+      createdAt: new Date(),
     };
     const result = await booksCollection.insertOne(bookData);
     console.log("Book added:", result.insertedId);
@@ -81,7 +79,11 @@ app.get("/all-books", async (req, res) => {
 // 3. Public: Get the six newest arrivals (For Home Page)
 app.get("/new-arrivals", async (req, res) => {
   try {
-    const result = await booksCollection.find().sort({ _id: -1 }).limit(6).toArray();
+    const result = await booksCollection
+      .find()
+      .sort({ _id: -1 })
+      .limit(6)
+      .toArray();
     res.send(result);
   } catch (error) {
     console.error("Error fetching new arrivals:", error);
@@ -108,38 +110,29 @@ app.get("/all-books/:id", async (req, res) => {
 // 5. Public: Borrow a book
 app.post("/my-borrows", async (req, res) => {
   try {
-    const { bookId, borrowerEmail, bookDetails } = req.body;
+    const { bookId, borrowerEmail } = req.body;
 
-    if (!bookId || !borrowerEmail) {
-      return res.status(400).send({
-        success: false,
-        message: "bookId and borrowerEmail are required",
-      });
-    }
-
-    if (!ObjectId.isValid(bookId)) {
+    if (!bookId || !borrowerEmail || !ObjectId.isValid(bookId)) {
       return res
         .status(400)
-        .send({ success: false, message: "Invalid book id" });
+        .send({ success: false, message: "Invalid bookId or borrowerEmail" });
     }
 
-    // No double borrows: one active loan of the same book per borrower.
+    // No double borrows: check if user already borrowed this book
     const existingLoan = await borrowsCollection.findOne({
       bookId: String(bookId),
       borrowerEmail,
-      status: "borrowed",
     });
 
     if (existingLoan) {
       return res.status(409).send({
         success: false,
-        message: "You already have this book borrowed.",
+        message: "You cannot borrow the same book twice at the same time!",
       });
     }
 
-    const book = await booksCollection.findOne({
-      _id: new ObjectId(bookId),
-    });
+    // Check if book exists and has available copies
+    const book = await booksCollection.findOne({ _id: new ObjectId(bookId) });
 
     if (!book) {
       return res
@@ -150,67 +143,34 @@ app.post("/my-borrows", async (req, res) => {
     const currentAvailable = book.availableCopies ?? book.totalCopies;
 
     if (currentAvailable <= 0) {
-      return res.status(409).send({
+      return res.status(400).send({
         success: false,
-        message: "No copies are currently available.",
+        message: "Not Available",
       });
     }
 
-    // Reserve one copy. The $gt guard keeps concurrent borrows from overselling.
-    const availableAfter = currentAvailable - 1;
-
-    if (book.availableCopies === undefined) {
-      // Legacy document without the counter yet — seed it.
-      await booksCollection.updateOne(
-        { _id: book._id },
-        { $set: { availableCopies: availableAfter } }
-      );
-    } else {
-      const reservation = await booksCollection.updateOne(
-        { _id: book._id, availableCopies: { $gt: 0 } },
-        { $inc: { availableCopies: -1 } }
-      );
-
-      if (reservation.matchedCount === 0) {
-        return res.status(409).send({
-          success: false,
-          message: "No copies are currently available.",
-        });
-      }
-    }
-
+    // Save borrow record
     const borrowData = {
       ...req.body,
-      bookDetails: { ...(bookDetails ?? {}), availableCopies: availableAfter },
       borrowedAt: new Date(),
       status: "borrowed",
     };
+    const inserted = await borrowsCollection.insertOne(borrowData);
 
-    let inserted;
-
-    try {
-      inserted = await borrowsCollection.insertOne(borrowData);
-    } catch (insertError) {
-      // Give the reserved copy back if the loan record couldn't be saved.
-      await booksCollection.updateOne(
-        { _id: book._id },
-        { $inc: { availableCopies: 1 } }
-      );
-      throw insertError;
-    }
+    // Decrease available copies by 1
+    await booksCollection.updateOne(
+      { _id: new ObjectId(bookId) },
+      { $inc: { availableCopies: -1 } },
+    );
 
     console.log("Book borrowed successfully:", inserted.insertedId);
-
     res.status(201).send({
       success: true,
       message: "Book borrowed successfully",
       insertedId: inserted.insertedId,
-      availableCopies: availableAfter,
     });
-
   } catch (error) {
     console.error("Error borrowing book:", error);
-
     res.status(500).send({
       success: false,
       message: "Failed to borrow book",
@@ -220,15 +180,16 @@ app.post("/my-borrows", async (req, res) => {
 });
 
 // 6. Get all borrowed books
-app.get("/my-borrows", async (req, res) => {
+app.get("/my-borrow/:email", async (req, res) => {
+  const { email } = req.params;
+
   try {
     const books = await borrowsCollection
-      .find()
+      .find({ borrowerEmail: email })
       .sort({ _id: -1 })
       .toArray();
 
     res.send(books);
-
   } catch (error) {
     console.error("Error fetching books:", error);
 
@@ -237,6 +198,12 @@ app.get("/my-borrows", async (req, res) => {
     });
   }
 });
+
+// const session = await auth.api.getSession({
+//   headers: await headers(),
+// });
+// const user = session?.user;
+// const res = await fetch(`http://localhost:8000/my-books/${user?.email}`);
 
 // 7. Return a borrowed book: drop the loan record and put the copy back
 app.delete("/my-borrows/:id", async (req, res) => {
@@ -249,6 +216,7 @@ app.delete("/my-borrows/:id", async (req, res) => {
         .send({ success: false, message: "Borrow record not found" });
     }
 
+    // Find and delete the borrow record
     const record = await borrowsCollection.findOneAndDelete({
       _id: new ObjectId(id),
     });
@@ -259,29 +227,21 @@ app.delete("/my-borrows/:id", async (req, res) => {
         .send({ success: false, message: "Borrow record not found" });
     }
 
-    let availableCopies;
-
-    // Only an active loan puts a copy back — never twice for the same record.
-    if (record.status !== "returned" && ObjectId.isValid(record.bookId)) {
-      const book = await booksCollection.findOneAndUpdate(
+    // Increase the book's available copies back by 1
+    if (record.bookId && ObjectId.isValid(record.bookId)) {
+      await booksCollection.updateOne(
         { _id: new ObjectId(record.bookId) },
         { $inc: { availableCopies: 1 } },
-        { returnDocument: "after" }
       );
-
-      availableCopies = book?.availableCopies;
     }
 
     console.log("Book returned:", id);
-
     res.send({
       success: true,
       message: "Book returned successfully",
-      availableCopies,
     });
   } catch (error) {
     console.error("Error returning book:", error);
-
     res.status(500).send({
       success: false,
       message: "Failed to return book",
@@ -290,12 +250,17 @@ app.delete("/my-borrows/:id", async (req, res) => {
   }
 });
 
-//8 . private 
-app.get("/my-books/:email",async (req, res)=>{
-  const {email} = req.para
-
+//8 . private : my books page
+app.get("/my-books/:email", async (req, res) => {
+  const { email } = req.params;
+  const result = await booksCollection
+    .find({ "addedBy.email": email })
+    .sort({ _id: -1 })
+    .toArray();
+  res.send(result);
 });
 
+//http://localhost:8000/my-books
 // Error Handling & Server Startup
 app.use((error, req, res, next) => {
   console.error("Request failed:", error);
@@ -305,7 +270,10 @@ app.use((error, req, res, next) => {
   res.status(500).send({ message: "Internal server error" });
 });
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
   const port = process.env.PORT || 8000;
   app.listen(port, () => {
     console.log(` BookNook Server is running at port ${port}`);

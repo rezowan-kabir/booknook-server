@@ -32,6 +32,9 @@ const verifyToken = async (req, res, next) => {
     );
 
     const { payload } = await jwtVerify(token, JWKS);
+    if (typeof payload.email !== "string" || !payload.email) {
+      return res.status(401).send({ message: "Unauthorized or Invalid Token!" });
+    }
 
     req.user = payload;
 
@@ -80,10 +83,14 @@ app.get("/", (req, res) => {
 });
 
 // 1. Private: Add a new book
-app.post("/add-book", async (req, res) => {
+app.post("/add-book", verifyToken, async (req, res) => {
   try {
     const bookData = {
       ...req.body,
+      addedBy: {
+        name: req.user.name || req.user.email,
+        email: req.user.email,
+      },
       // Every book starts with all of its copies on the shelf.
       availableCopies: Number(req.body.totalCopies) || 0,
       createdAt: new Date(),
@@ -139,21 +146,25 @@ app.get("/all-books/:id",verifyToken, async (req, res) => {
   }
 });
 
-// 5. Public: Borrow a book
-app.post("/my-borrows", async (req, res) => {
+// 5. Private: Borrow a book
+app.post("/my-borrows",verifyToken, async (req, res) => {
   try {
     const { bookId, borrowerEmail } = req.body;
 
-    if (!bookId || !borrowerEmail || !ObjectId.isValid(bookId)) {
+    if (!bookId || !ObjectId.isValid(bookId)) {
       return res
         .status(400)
-        .send({ success: false, message: "Invalid bookId or borrowerEmail" });
+        .send({ success: false, message: "Invalid bookId" });
+    }
+
+    if (borrowerEmail && borrowerEmail !== req.user.email) {
+      return res.status(403).send({ success: false, message: "Forbidden" });
     }
 
     // No double borrows: check if user already borrowed this book
     const existingLoan = await borrowsCollection.findOne({
       bookId: String(bookId),
-      borrowerEmail,
+      borrowerEmail: req.user.email,
     });
 
     if (existingLoan) {
@@ -184,6 +195,8 @@ app.post("/my-borrows", async (req, res) => {
     // Save borrow record
     const borrowData = {
       ...req.body,
+      borrowerEmail: req.user.email,
+      borrowerName: req.user.name || req.user.email,
       borrowedAt: new Date(),
       status: "borrowed",
     };
@@ -212,12 +225,15 @@ app.post("/my-borrows", async (req, res) => {
 });
 
 // 6. Get all borrowed books
-app.get("/my-borrow/:email", async (req, res) => {
+app.get("/my-borrow/:email", verifyToken, async (req, res) => {
   const { email } = req.params;
+  if (email !== req.user.email) {
+    return res.status(403).send({ message: "Forbidden" });
+  }
 
   try {
     const books = await borrowsCollection
-      .find({ borrowerEmail: email })
+      .find({ borrowerEmail: req.user.email })
       .sort({ _id: -1 })
       .toArray();
 
@@ -238,7 +254,7 @@ app.get("/my-borrow/:email", async (req, res) => {
 // const res = await fetch(`http://localhost:8000/my-books/${user?.email}`);
 
 // 7. Return a borrowed book: drop the loan record and put the copy back
-app.delete("/my-borrows/:id", async (req, res) => {
+app.delete("/my-borrows/:id",verifyToken, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -251,6 +267,7 @@ app.delete("/my-borrows/:id", async (req, res) => {
     // Find and delete the borrow record
     const record = await borrowsCollection.findOneAndDelete({
       _id: new ObjectId(id),
+      borrowerEmail: req.user.email,
     });
 
     if (!record) {
@@ -282,22 +299,15 @@ app.delete("/my-borrows/:id", async (req, res) => {
   }
 });
 
-//8 . private : my books page
-app.get("/my-books/:email", async (req, res) => {
-  const { email } = req.params;
-  const result = await booksCollection
-    .find({ "addedBy.email": email })
-    .sort({ _id: -1 })
-    .toArray();
-  res.send(result);
-});
+// 8. Get the books the authenticated user has cataloged
+app.get("/my-books/:email", verifyToken, async (req, res) => {
+  if (req.params.email !== req.user.email) {
+    return res.status(403).send({ message: "Forbidden" });
+  }
 
-//http://localhost:8000/my-books
-// 8. Get the books a specific user has cataloged
-app.get("/my-books/:email", async (req, res) => {
   try {
     const books = await booksCollection
-      .find({ "addedBy.email": req.params.email })
+      .find({ "addedBy.email": req.user.email })
       .sort({ _id: -1 })
       .toArray();
 
@@ -310,7 +320,7 @@ app.get("/my-books/:email", async (req, res) => {
 });
 
 // 9. Update a cataloged book (Simplified)
-app.put("/my-books/:id", async (req, res) => {
+app.put("/my-books/:id", verifyToken, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -337,7 +347,7 @@ app.put("/my-books/:id", async (req, res) => {
     };
 
     const result = await booksCollection.updateOne(
-      { _id: new ObjectId(id) },
+      { _id: new ObjectId(id), "addedBy.email": req.user.email },
       updateDoc
     );
 
@@ -359,7 +369,7 @@ app.put("/my-books/:id", async (req, res) => {
 });
 
 // 10. Remove a cataloged book (Simplified)
-app.delete("/my-books/:id", async (req, res) => {
+app.delete("/my-books/:id", verifyToken, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -369,6 +379,7 @@ app.delete("/my-books/:id", async (req, res) => {
 
     const result = await booksCollection.deleteOne({
       _id: new ObjectId(id),
+      "addedBy.email": req.user.email,
     });
 
     if (result.deletedCount === 0) {

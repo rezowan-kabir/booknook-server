@@ -74,16 +74,16 @@ const mongoClient = await connectToMongoDB();
 const db = mongoClient.db("booknook");
 
 // Collections
-const booksCollection = db.collection("add books"); // সব বইয়ের কালেকশন
-const borrowsCollection = db.collection("borrow books"); // বরো করা বইয়ের কালেকশন
+const booksCollection = db.collection("add books"); 
+const borrowsCollection = db.collection("borrow books"); 
 
-// Root route
+
 app.get("/", (req, res) => {
   res.send({ message: "BookNook Server is running gracefully!" });
 });
 
 // 1. Private: Add a new book
-app.post("/add-book", verifyToken, async (req, res) => {
+app.post("/books", verifyToken, async (req, res) => {
   try {
     const bookData = {
       ...req.body,
@@ -91,7 +91,7 @@ app.post("/add-book", verifyToken, async (req, res) => {
         name: req.user.name || req.user.email,
         email: req.user.email,
       },
-      // Every book starts with all of its copies on the shelf.
+      
       availableCopies: Number(req.body.totalCopies) || 0,
       createdAt: new Date(),
     };
@@ -104,8 +104,8 @@ app.post("/add-book", verifyToken, async (req, res) => {
   }
 });
 
-// 2. Public: Get all books (Newest books first / Descending order)
-app.get("/all-books", async (req, res) => {
+// 2. Public: Get all books
+app.get("/books", async (req, res) => {
   try {
     const books = await booksCollection.find().sort({ _id: -1 }).toArray();
     res.send(books);
@@ -116,7 +116,7 @@ app.get("/all-books", async (req, res) => {
 });
 
 // 3. Public: Get the six newest arrivals (For Home Page)
-app.get("/new-arrivals", async (req, res) => {
+app.get("/books/new-arrivals", async (req, res) => {
   try {
     const result = await booksCollection
       .find()
@@ -131,7 +131,7 @@ app.get("/new-arrivals", async (req, res) => {
 });
 
 // 4. Private: Get single book details
-app.get("/all-books/:id",verifyToken, async (req, res) => {
+app.get("/books/:id",verifyToken, async (req, res) => {
   try {
     const result = await booksCollection.findOne({
       _id: new ObjectId(req.params.id),
@@ -147,7 +147,7 @@ app.get("/all-books/:id",verifyToken, async (req, res) => {
 });
 
 // 5. Private: Borrow a book
-app.post("/my-borrows",verifyToken, async (req, res) => {
+app.post("/borrows",verifyToken, async (req, res) => {
   try {
     const { bookId, borrowerEmail } = req.body;
 
@@ -161,7 +161,7 @@ app.post("/my-borrows",verifyToken, async (req, res) => {
       return res.status(403).send({ success: false, message: "Forbidden" });
     }
 
-    // No double borrows: check if user already borrowed this book
+    // No double borrows
     const existingLoan = await borrowsCollection.findOne({
       bookId: String(bookId),
       borrowerEmail: req.user.email,
@@ -174,7 +174,7 @@ app.post("/my-borrows",verifyToken, async (req, res) => {
       });
     }
 
-    // Check if book exists and has available copies
+    
     const book = await booksCollection.findOne({ _id: new ObjectId(bookId) });
 
     if (!book) {
@@ -192,7 +192,7 @@ app.post("/my-borrows",verifyToken, async (req, res) => {
       });
     }
 
-    // Save borrow record
+    
     const borrowData = {
       ...req.body,
       borrowerEmail: req.user.email,
@@ -202,11 +202,18 @@ app.post("/my-borrows",verifyToken, async (req, res) => {
     };
     const inserted = await borrowsCollection.insertOne(borrowData);
 
-    // Decrease available copies by 1
-    await booksCollection.updateOne(
-      { _id: new ObjectId(bookId) },
+    const decrement = await booksCollection.updateOne(
+      { _id: new ObjectId(bookId), availableCopies: { $gt: 0 } },
       { $inc: { availableCopies: -1 } },
     );
+
+    if (decrement.matchedCount === 0) {
+      await borrowsCollection.deleteOne({ _id: inserted.insertedId });
+      return res.status(400).send({
+        success: false,
+        message: "Not Available",
+      });
+    }
 
     console.log("Book borrowed successfully:", inserted.insertedId);
     res.status(201).send({
@@ -224,8 +231,8 @@ app.post("/my-borrows",verifyToken, async (req, res) => {
   }
 });
 
-// 6. Get all borrowed books
-app.get("/my-borrow/:email", verifyToken, async (req, res) => {
+// 6.public: Get the authenticated user's borrow records
+app.get("/borrows/:email", verifyToken, async (req, res) => {
   const { email } = req.params;
   if (email !== req.user.email) {
     return res.status(403).send({ message: "Forbidden" });
@@ -247,14 +254,8 @@ app.get("/my-borrow/:email", verifyToken, async (req, res) => {
   }
 });
 
-// const session = await auth.api.getSession({
-//   headers: await headers(),
-// });
-// const user = session?.user;
-// const res = await fetch(`http://localhost:8000/my-books/${user?.email}`);
-
-// 7. Return a borrowed book: drop the loan record and put the copy back
-app.delete("/my-borrows/:id",verifyToken, async (req, res) => {
+// 7.private: Delete some data
+app.delete("/borrows/:id",verifyToken, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -276,7 +277,7 @@ app.delete("/my-borrows/:id",verifyToken, async (req, res) => {
         .send({ success: false, message: "Borrow record not found" });
     }
 
-    // Increase the book's available copies back by 1
+   
     if (record.bookId && ObjectId.isValid(record.bookId)) {
       await booksCollection.updateOne(
         { _id: new ObjectId(record.bookId) },
@@ -299,8 +300,8 @@ app.delete("/my-borrows/:id",verifyToken, async (req, res) => {
   }
 });
 
-// 8. Get the books the authenticated user has cataloged
-app.get("/my-books/:email", verifyToken, async (req, res) => {
+// 8.Private: Get the books the authenticated user has cataloged
+app.get("/books/user/:email", verifyToken, async (req, res) => {
   if (req.params.email !== req.user.email) {
     return res.status(403).send({ message: "Forbidden" });
   }
@@ -319,8 +320,8 @@ app.get("/my-books/:email", verifyToken, async (req, res) => {
   }
 });
 
-// 9. Update a cataloged book (Simplified)
-app.put("/my-books/:id", verifyToken, async (req, res) => {
+// 9.Private: Update a cataloged book 
+app.patch("/books/:id", verifyToken, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -346,17 +347,18 @@ app.put("/my-books/:id", verifyToken, async (req, res) => {
       },
     };
 
-    const result = await booksCollection.updateOne(
+    const updated = await booksCollection.findOneAndUpdate(
       { _id: new ObjectId(id), "addedBy.email": req.user.email },
-      updateDoc
+      updateDoc,
+      { returnDocument: "after" },
     );
 
-    if (result.matchedCount === 0) {
+    if (!updated) {
       return res.status(404).send({ success: false, message: "Book not found" });
     }
 
     console.log("Book updated:", id);
-    res.send({ success: true, message: "Book updated successfully" });
+    res.send({ success: true, message: "Book updated successfully", result: updated });
 
   } catch (error) {
     console.error("Error updating book:", error);
@@ -368,8 +370,8 @@ app.put("/my-books/:id", verifyToken, async (req, res) => {
   }
 });
 
-// 10. Remove a cataloged book (Simplified)
-app.delete("/my-books/:id", verifyToken, async (req, res) => {
+// 10.Private: Remove a cataloged book
+app.delete("/books/:id", verifyToken, async (req, res) => {
   try {
     const { id } = req.params;
 

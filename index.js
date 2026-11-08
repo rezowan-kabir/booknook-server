@@ -3,6 +3,7 @@ import { MongoClient, ObjectId } from "mongodb";
 import "dotenv/config";
 import cors from "cors";
 import { pathToFileURL } from "node:url";
+import { createRemoteJWKSet, jwtVerify } from "jose";
 
 const app = express();
 
@@ -12,6 +13,37 @@ app.use(express.json());
 // MongoDB Connection State
 let client;
 let connection;
+
+
+const verifyToken = async (req, res, next) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader) {
+      return res.status(401).send({ message: "Unauthorized" });
+    }
+
+    const token = authHeader.split(" ")[1];
+    if (!token) {
+      return res.status(401).send({ message: "Unauthorized!" });
+    }
+
+    const JWKS = createRemoteJWKSet(
+      new URL(`${process.env.FRONTEND_BASE_URL}/api/auth/jwks`),
+    );
+
+    const { payload } = await jwtVerify(token, JWKS);
+
+    req.user = payload;
+
+    console.log("Verified Payload:", payload);
+    console.log("I am middleware");
+
+    return next(); 
+  } catch (error) {
+    console.error("Token verification error:", error);
+    return res.status(401).send({ message: "Unauthorized or Invalid Token!" });
+  }
+};
 
 export async function connectToMongoDB() {
   const mongoUrl = process.env.MONGO_DB_URL;
@@ -92,7 +124,7 @@ app.get("/new-arrivals", async (req, res) => {
 });
 
 // 4. Private: Get single book details
-app.get("/all-books/:id", async (req, res) => {
+app.get("/all-books/:id",verifyToken, async (req, res) => {
   try {
     const result = await booksCollection.findOne({
       _id: new ObjectId(req.params.id),
